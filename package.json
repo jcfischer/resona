@@ -1,0 +1,58 @@
+{
+  "name": "resona",
+  "version": "0.1.0",
+  "description": "Semantic embeddings and vector search - find concepts that resonate",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "prepublishOnly": "bun run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "embeddings",
+    "semantic-search",
+    "vector",
+    "sqlite-vec",
+    "ollama",
+    "resona",
+    "ai",
+    "machine-learning"
+  ],
+  "author": "Jens-Christian Fischer",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jcfischer/resona"
+  },
+  "bugs": {
+    "url": "https://github.com/jcfischer/resona/issues"
+  },
+  "homepage": "https://github.com/jcfischer/resona#readme",
+  "dependencies": {
+    "drizzle-orm": "^0.38.3",
+    "sqlite-vec": "^0.1.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "bun": ">=1.0.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ]
+}
