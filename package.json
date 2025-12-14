@@ -16,7 +16,7 @@
     "embeddings",
     "semantic-search",
     "vector",
-    "sqlite-vec",
+    "lancedb",
     "ollama",
     "resona",
     "ai",
@@ -33,8 +33,8 @@
   },
   "homepage": "https://github.com/jcfischer/resona#readme",
   "dependencies": {
-    "drizzle-orm": "^0.38.3",
-    "sqlite-vec": "^0.1.6"
+    "@lancedb/lancedb": "^0.13.0",
+    "drizzle-orm": "^0.38.3"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",

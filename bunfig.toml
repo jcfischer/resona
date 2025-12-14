@@ -1,5 +1,4 @@
 # Bun configuration for Resona
 
 [test]
-# Preload custom SQLite for sqlite-vec extension support on macOS
-preload = ["./src/preload-sqlite.ts"]
+# No special configuration needed - LanceDB works out of the box

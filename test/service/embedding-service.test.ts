@@ -5,10 +5,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
 import { EmbeddingService } from "../../src/service/embedding-service";
 import type { EmbeddingProvider, ItemToEmbed } from "../../src/types";
-import { unlinkSync, existsSync } from "fs";
+import { rmSync, existsSync } from "fs";
 
 // Mock provider for testing
 class MockProvider implements EmbeddingProvider {
@@ -54,32 +53,30 @@ class MockProvider implements EmbeddingProvider {
   }
 }
 
-const TEST_DB_PATH = "/tmp/resona-test.db";
+// LanceDB uses directory, not single file
+const TEST_DB_PATH = "/tmp/resona-test.lance";
+
+function cleanupTestDb() {
+  if (existsSync(TEST_DB_PATH)) {
+    rmSync(TEST_DB_PATH, { recursive: true, force: true });
+  }
+}
 
 describe("EmbeddingService", () => {
   let provider: MockProvider;
   let service: EmbeddingService;
 
   beforeAll(() => {
-    // Clean up any existing test database
-    if (existsSync(TEST_DB_PATH)) {
-      unlinkSync(TEST_DB_PATH);
-    }
+    cleanupTestDb();
   });
 
   beforeEach(() => {
-    // Clean up before each test
-    if (existsSync(TEST_DB_PATH)) {
-      unlinkSync(TEST_DB_PATH);
-    }
+    cleanupTestDb();
     provider = new MockProvider();
   });
 
   afterAll(() => {
-    // Final cleanup
-    if (existsSync(TEST_DB_PATH)) {
-      unlinkSync(TEST_DB_PATH);
-    }
+    cleanupTestDb();
   });
 
   describe("constructor", () => {
@@ -90,21 +87,15 @@ describe("EmbeddingService", () => {
       expect(service.provider).toBe(provider);
     });
 
-    it("should initialize database schema on creation", () => {
+    it("should initialize LanceDB on first operation", async () => {
       service = new EmbeddingService(provider, TEST_DB_PATH);
 
-      // Database should exist and have tables
-      const db = new Database(TEST_DB_PATH, { readonly: true });
-      const tables = db
-        .query(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        )
-        .all() as { name: string }[];
-      db.close();
+      // Trigger initialization by getting stats
+      const stats = await service.getStats();
+      expect(stats.totalEmbeddings).toBe(0);
 
-      const tableNames = tables.map((t) => t.name);
-      expect(tableNames).toContain("embeddings");
-      expect(tableNames).toContain("vec_embeddings"); // sqlite-vec virtual table
+      // LanceDB directory should exist after first operation
+      expect(existsSync(TEST_DB_PATH)).toBe(true);
     });
   });
 
@@ -119,7 +110,7 @@ describe("EmbeddingService", () => {
 
       await service.embed(item);
 
-      const stats = service.getStats();
+      const stats = await service.getStats();
       expect(stats.totalEmbeddings).toBe(1);
     });
 
@@ -134,7 +125,7 @@ describe("EmbeddingService", () => {
 
       await service.embed(item);
 
-      const stored = service.getEmbedding("test-1");
+      const stored = await service.getEmbedding("test-1");
       expect(stored?.contextText).toBe(
         "This is the enriched context that will be embedded"
       );
@@ -151,7 +142,7 @@ describe("EmbeddingService", () => {
 
       await service.embed(item);
 
-      const stored = service.getEmbedding("test-1");
+      const stored = await service.getEmbedding("test-1");
       expect(stored?.metadata).toEqual({ tags: ["test", "example"], priority: 1 });
     });
 
@@ -207,7 +198,7 @@ describe("EmbeddingService", () => {
       expect(result.skipped).toBe(0);
       expect(result.errors).toBe(0);
 
-      const stats = service.getStats();
+      const stats = await service.getStats();
       expect(stats.totalEmbeddings).toBe(3);
     });
 
@@ -350,16 +341,17 @@ describe("EmbeddingService", () => {
       service = new EmbeddingService(provider, TEST_DB_PATH);
 
       await service.embed({ id: "test-1", text: "Hello" });
-      expect(service.getStats().totalEmbeddings).toBe(1);
+      expect((await service.getStats()).totalEmbeddings).toBe(1);
 
-      service.delete("test-1");
-      expect(service.getStats().totalEmbeddings).toBe(0);
+      await service.delete("test-1");
+      expect((await service.getStats()).totalEmbeddings).toBe(0);
     });
 
-    it("should not throw when deleting non-existent id", () => {
+    it("should not throw when deleting non-existent id", async () => {
       service = new EmbeddingService(provider, TEST_DB_PATH);
 
-      expect(() => service.delete("non-existent")).not.toThrow();
+      // Should not throw
+      await service.delete("non-existent");
     });
   });
 
@@ -372,7 +364,7 @@ describe("EmbeddingService", () => {
         { id: "item-2", text: "Second" },
       ]);
 
-      const stats = service.getStats();
+      const stats = await service.getStats();
 
       expect(stats.totalEmbeddings).toBe(2);
       expect(stats.model).toBe("mock-model");
@@ -390,13 +382,32 @@ describe("EmbeddingService", () => {
         { id: "remove-1", text: "Remove this" },
       ]);
 
-      expect(service.getStats().totalEmbeddings).toBe(3);
+      expect((await service.getStats()).totalEmbeddings).toBe(3);
 
-      const removed = service.cleanup(["keep-1", "keep-2"]);
+      const removed = await service.cleanup(["keep-1", "keep-2"]);
 
       expect(removed).toBe(1);
-      expect(service.getStats().totalEmbeddings).toBe(2);
-      expect(service.getEmbedding("remove-1")).toBeNull();
+      expect((await service.getStats()).totalEmbeddings).toBe(2);
+      expect(await service.getEmbedding("remove-1")).toBeNull();
+    });
+  });
+
+  describe("getEmbeddedIds", () => {
+    it("should return all embedded item IDs", async () => {
+      service = new EmbeddingService(provider, TEST_DB_PATH);
+
+      await service.embedBatch([
+        { id: "item-1", text: "First" },
+        { id: "item-2", text: "Second" },
+        { id: "item-3", text: "Third" },
+      ]);
+
+      const ids = await service.getEmbeddedIds();
+
+      expect(ids).toHaveLength(3);
+      expect(ids).toContain("item-1");
+      expect(ids).toContain("item-2");
+      expect(ids).toContain("item-3");
     });
   });
 });

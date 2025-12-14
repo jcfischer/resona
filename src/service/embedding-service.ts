@@ -1,12 +1,12 @@
 /**
  * EmbeddingService
  *
- * Core service for managing embeddings with sqlite-vec.
+ * Core service for managing embeddings with LanceDB.
  * Handles embedding generation, storage, and similarity search.
  */
 
-import { Database } from "bun:sqlite";
-import { createVecDatabase } from "../sqlite-vec-loader";
+import * as lancedb from "@lancedb/lancedb";
+import type { Table } from "@lancedb/lancedb";
 import type {
   EmbeddingProvider,
   ItemToEmbed,
@@ -18,6 +18,21 @@ import type {
 } from "../types";
 
 /**
+ * Schema for LanceDB embeddings table
+ */
+interface EmbeddingRecord {
+  id: string;
+  text_hash: string;
+  context_text: string;
+  model: string;
+  dimensions: number;
+  metadata: string; // Empty string when no metadata (LanceDB needs non-null for schema inference)
+  created_at: number;
+  updated_at: number;
+  vector: number[];
+}
+
+/**
  * Compute SHA256 hash of text for change detection
  */
 function hashText(text: string): string {
@@ -27,74 +42,65 @@ function hashText(text: string): string {
 }
 
 /**
- * Convert Float32Array to Buffer for storage
- */
-function float32ToBuffer(arr: Float32Array): Buffer {
-  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-
-/**
- * Convert Buffer back to Float32Array
- */
-function bufferToFloat32(buf: Buffer): Float32Array {
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-}
-
-/**
- * EmbeddingService - manages embeddings with sqlite-vec
+ * EmbeddingService - manages embeddings with LanceDB
  */
 export class EmbeddingService {
   readonly provider: EmbeddingProvider;
-  private db: Database;
+  private db: lancedb.Connection | null = null;
+  private table: Table | null = null;
   private dbPath: string;
+  private initialized: boolean = false;
+  private initPromise: Promise<void> | null = null;
 
   /**
    * Create an EmbeddingService
    *
    * @param provider - The embedding provider to use
-   * @param dbPath - Path to SQLite database file
+   * @param dbPath - Path to LanceDB database directory
    */
   constructor(provider: EmbeddingProvider, dbPath: string) {
     this.provider = provider;
-    this.dbPath = dbPath;
-
-    // Open database with sqlite-vec loaded
-    this.db = createVecDatabase(dbPath);
-
-    this.initSchema();
+    // Convert .db extension to .lance for LanceDB
+    this.dbPath = dbPath.replace(/\.db$/, ".lance");
   }
 
   /**
-   * Initialize database schema
+   * Initialize the database connection and table
    */
-  private initSchema(): void {
-    // Main embeddings metadata table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS embeddings (
-        id TEXT PRIMARY KEY,
-        text_hash TEXT NOT NULL,
-        context_text TEXT NOT NULL,
-        model TEXT NOT NULL,
-        dimensions INTEGER NOT NULL,
-        metadata TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
 
-    // Create index on text_hash for fast change detection
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_embeddings_hash ON embeddings(text_hash)
-    `);
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
 
-    // Virtual table for vector storage and search
-    // Using vec0 extension from sqlite-vec
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
-        id TEXT PRIMARY KEY,
-        embedding FLOAT[${this.provider.dimensions}]
-      )
-    `);
+    this.initPromise = this.initialize();
+    await this.initPromise;
+  }
+
+  private async initialize(): Promise<void> {
+    this.db = await lancedb.connect(this.dbPath);
+
+    // Check if table exists
+    const tables = await this.db.tableNames();
+    if (tables.includes("embeddings")) {
+      this.table = await this.db.openTable("embeddings");
+    }
+    // Table will be created on first insert with correct schema
+
+    this.initialized = true;
+  }
+
+  /**
+   * Create the embeddings table with initial data
+   */
+  private async createTable(record: EmbeddingRecord): Promise<void> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    this.table = await this.db.createTable("embeddings", [record], {
+      mode: "overwrite",
+    });
   }
 
   /**
@@ -104,25 +110,39 @@ export class EmbeddingService {
    * @returns Whether a new embedding was created (false if skipped)
    */
   async embed(item: ItemToEmbed): Promise<boolean> {
+    await this.ensureInitialized();
+
     const textToEmbed = item.contextText || item.text;
     const textHash = hashText(textToEmbed);
 
     // Check if unchanged
-    const existing = this.db
-      .query<{ text_hash: string }, [string]>(
-        "SELECT text_hash FROM embeddings WHERE id = ?"
-      )
-      .get(item.id);
+    if (this.table) {
+      try {
+        const existing = await this.table
+          .query()
+          .where(`id = '${item.id.replace(/'/g, "''")}'`)
+          .limit(1)
+          .toArray();
 
-    if (existing && existing.text_hash === textHash) {
-      return false; // Skip - unchanged
+        if (existing.length > 0 && existing[0].text_hash === textHash) {
+          return false; // Skip - unchanged
+        }
+      } catch {
+        // Table might not exist yet or query failed, continue with embedding
+      }
     }
 
     // Generate embedding
     const embedding = await this.provider.embedSingle(textToEmbed);
 
     // Store in database
-    this.storeEmbedding(item.id, embedding, textHash, textToEmbed, item.metadata);
+    await this.storeEmbedding(
+      item.id,
+      embedding,
+      textHash,
+      textToEmbed,
+      item.metadata
+    );
 
     return true;
   }
@@ -138,6 +158,8 @@ export class EmbeddingService {
     items: ItemToEmbed[],
     options: BatchEmbedOptions = {}
   ): Promise<BatchEmbedResult> {
+    await this.ensureInitialized();
+
     const { onProgress, progressInterval = 100, forceAll = false } = options;
 
     const result: BatchEmbedResult = {
@@ -149,14 +171,17 @@ export class EmbeddingService {
 
     // Build hash map for change detection
     const hashMap = new Map<string, string>();
-    if (!forceAll) {
-      const existingHashes = this.db
-        .query<{ id: string; text_hash: string }, []>(
-          "SELECT id, text_hash FROM embeddings"
-        )
-        .all();
-      for (const row of existingHashes) {
-        hashMap.set(row.id, row.text_hash);
+    if (!forceAll && this.table) {
+      try {
+        const existingRecords = await this.table
+          .query()
+          .select(["id", "text_hash"])
+          .toArray();
+        for (const row of existingRecords) {
+          hashMap.set(row.id as string, row.text_hash as string);
+        }
+      } catch {
+        // Table might not exist yet, continue
       }
     }
 
@@ -176,6 +201,9 @@ export class EmbeddingService {
       }
     }
 
+    // Track timing for rate calculation
+    const startTime = Date.now();
+
     // Process in batches
     const batchSize = this.provider.maxBatchSize;
     for (let i = 0; i < itemsToEmbed.length; i += batchSize) {
@@ -193,7 +221,7 @@ export class EmbeddingService {
           const textToEmbed = item.contextText || item.text;
 
           try {
-            this.storeEmbedding(
+            await this.storeEmbedding(
               item.id,
               embedding,
               textHash,
@@ -221,7 +249,11 @@ export class EmbeddingService {
       }
 
       // Report progress
-      if (onProgress && (i + batchSize) % progressInterval === 0) {
+      const totalProcessed = result.processed + result.skipped + result.errors;
+      if (onProgress && totalProcessed % progressInterval === 0) {
+        const elapsed = (Date.now() - startTime) / 1000;
+        const rate = result.processed > 0 ? result.processed / elapsed : 0;
+
         onProgress({
           processed: result.processed,
           skipped: result.skipped,
@@ -229,17 +261,22 @@ export class EmbeddingService {
           total: items.length,
           currentItem:
             batchItems[batchItems.length - 1]?.text.substring(0, 50),
+          rate,
         });
       }
     }
 
     // Final progress report
     if (onProgress) {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const rate = result.processed > 0 ? result.processed / elapsed : 0;
+
       onProgress({
         processed: result.processed,
         skipped: result.skipped,
         errors: result.errors,
         total: items.length,
+        rate,
       });
     }
 
@@ -249,48 +286,41 @@ export class EmbeddingService {
   /**
    * Store an embedding in the database
    */
-  private storeEmbedding(
+  private async storeEmbedding(
     id: string,
     embedding: Float32Array,
     textHash: string,
     contextText: string,
     metadata?: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const now = Date.now();
-    const metadataJson = metadata ? JSON.stringify(metadata) : null;
-    const embeddingBuffer = float32ToBuffer(embedding);
+    // Use empty string instead of null - LanceDB can't infer schema from null values
+    const metadataJson = metadata ? JSON.stringify(metadata) : "";
 
-    // Upsert metadata
-    this.db.run(
-      `
-      INSERT INTO embeddings (id, text_hash, context_text, model, dimensions, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        text_hash = excluded.text_hash,
-        context_text = excluded.context_text,
-        model = excluded.model,
-        dimensions = excluded.dimensions,
-        metadata = excluded.metadata,
-        updated_at = excluded.updated_at
-      `,
-      [
-        id,
-        textHash,
-        contextText,
-        this.provider.model,
-        this.provider.dimensions,
-        metadataJson,
-        now,
-        now,
-      ]
-    );
-
-    // Upsert vector
-    this.db.run(`DELETE FROM vec_embeddings WHERE id = ?`, [id]);
-    this.db.run(`INSERT INTO vec_embeddings (id, embedding) VALUES (?, ?)`, [
+    const record: EmbeddingRecord = {
       id,
-      embeddingBuffer,
-    ]);
+      text_hash: textHash,
+      context_text: contextText,
+      model: this.provider.model,
+      dimensions: this.provider.dimensions,
+      metadata: metadataJson,
+      created_at: now,
+      updated_at: now,
+      vector: Array.from(embedding),
+    };
+
+    if (!this.table) {
+      // Create table with first record
+      await this.createTable(record);
+    } else {
+      // Delete existing record if any, then add new one
+      try {
+        await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
+      } catch {
+        // Record might not exist, that's fine
+      }
+      await this.table.add([record]);
+    }
   }
 
   /**
@@ -301,42 +331,34 @@ export class EmbeddingService {
    * @returns Search results sorted by similarity (descending)
    */
   async search(query: string, k: number = 10): Promise<SearchResult[]> {
-    // Generate query embedding
-    const queryEmbedding = await this.provider.embedSingle(query);
-    const queryBuffer = float32ToBuffer(queryEmbedding);
+    await this.ensureInitialized();
 
-    // Search using sqlite-vec
-    const vecResults = this.db
-      .query<{ id: string; distance: number }, [Buffer, number]>(
-        `
-        SELECT id, distance
-        FROM vec_embeddings
-        WHERE embedding MATCH ?
-        ORDER BY distance
-        LIMIT ?
-        `
-      )
-      .all(queryBuffer, k);
-
-    // Fetch metadata for results
-    const results: SearchResult[] = [];
-    for (const row of vecResults) {
-      const meta = this.db
-        .query<{ context_text: string; metadata: string | null }, [string]>(
-          "SELECT context_text, metadata FROM embeddings WHERE id = ?"
-        )
-        .get(row.id);
-
-      results.push({
-        id: row.id,
-        distance: row.distance,
-        similarity: 1 - row.distance, // Convert distance to similarity
-        contextText: meta?.context_text,
-        metadata: meta?.metadata ? JSON.parse(meta.metadata) : undefined,
-      });
+    if (!this.table) {
+      return []; // No embeddings yet
     }
 
-    return results;
+    // Generate query embedding
+    const queryEmbedding = await this.provider.embedSingle(query);
+
+    // Search using LanceDB
+    const results = await this.table
+      .vectorSearch(Array.from(queryEmbedding))
+      .limit(k)
+      .toArray();
+
+    // Map to SearchResult format
+    return results.map((row) => {
+      const metadataStr = row.metadata as string;
+      return {
+        id: row.id as string,
+        distance: row._distance as number,
+        similarity: 1 - (row._distance as number),
+        contextText: row.context_text as string,
+        metadata: metadataStr && metadataStr.length > 0
+          ? JSON.parse(metadataStr)
+          : undefined,
+      };
+    });
   }
 
   /**
@@ -345,45 +367,42 @@ export class EmbeddingService {
    * @param id - Item ID
    * @returns Stored embedding or null if not found
    */
-  getEmbedding(id: string): StoredEmbedding | null {
-    const row = this.db
-      .query<
-        {
-          id: string;
-          text_hash: string;
-          context_text: string;
-          model: string;
-          dimensions: number;
-          metadata: string | null;
-          created_at: number;
-          updated_at: number;
-        },
-        [string]
-      >("SELECT * FROM embeddings WHERE id = ?")
-      .get(id);
+  async getEmbedding(id: string): Promise<StoredEmbedding | null> {
+    await this.ensureInitialized();
 
-    if (!row) {
+    if (!this.table) {
       return null;
     }
 
-    // Get the embedding vector
-    const vecRow = this.db
-      .query<{ embedding: Buffer }, [string]>(
-        "SELECT embedding FROM vec_embeddings WHERE id = ?"
-      )
-      .get(id);
+    try {
+      const rows = await this.table
+        .query()
+        .where(`id = '${id.replace(/'/g, "''")}'`)
+        .limit(1)
+        .toArray();
 
-    return {
-      id: row.id,
-      embedding: vecRow ? bufferToFloat32(vecRow.embedding) : new Float32Array(0),
-      textHash: row.text_hash,
-      contextText: row.context_text,
-      model: row.model,
-      dimensions: row.dimensions,
-      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+      if (rows.length === 0) {
+        return null;
+      }
+
+      const row = rows[0];
+      const metadataStr = row.metadata as string;
+      return {
+        id: row.id as string,
+        embedding: new Float32Array(row.vector as number[]),
+        textHash: row.text_hash as string,
+        contextText: row.context_text as string,
+        model: row.model as string,
+        dimensions: row.dimensions as number,
+        metadata: metadataStr && metadataStr.length > 0
+          ? JSON.parse(metadataStr)
+          : undefined,
+        createdAt: row.created_at as number,
+        updatedAt: row.updated_at as number,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -391,9 +410,16 @@ export class EmbeddingService {
    *
    * @param id - Item ID to delete
    */
-  delete(id: string): void {
-    this.db.run("DELETE FROM embeddings WHERE id = ?", [id]);
-    this.db.run("DELETE FROM vec_embeddings WHERE id = ?", [id]);
+  async delete(id: string): Promise<void> {
+    await this.ensureInitialized();
+
+    if (this.table) {
+      try {
+        await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
+      } catch {
+        // Record might not exist
+      }
+    }
   }
 
   /**
@@ -402,18 +428,20 @@ export class EmbeddingService {
    * @param keepIds - List of IDs to keep
    * @returns Number of embeddings removed
    */
-  cleanup(keepIds: string[]): number {
-    // Get all current IDs
-    const currentIds = this.db
-      .query<{ id: string }, []>("SELECT id FROM embeddings")
-      .all()
-      .map((r) => r.id);
+  async cleanup(keepIds: string[]): Promise<number> {
+    await this.ensureInitialized();
 
+    if (!this.table) {
+      return 0;
+    }
+
+    // Get all current IDs
+    const currentIds = await this.getEmbeddedIds();
     const keepSet = new Set(keepIds);
     const toRemove = currentIds.filter((id) => !keepSet.has(id));
 
     for (const id of toRemove) {
-      this.delete(id);
+      await this.delete(id);
     }
 
     return toRemove.length;
@@ -424,11 +452,19 @@ export class EmbeddingService {
    *
    * @returns Array of item IDs
    */
-  getEmbeddedIds(): string[] {
-    const rows = this.db
-      .query<{ id: string }, []>("SELECT id FROM embeddings")
-      .all();
-    return rows.map((r) => r.id);
+  async getEmbeddedIds(): Promise<string[]> {
+    await this.ensureInitialized();
+
+    if (!this.table) {
+      return [];
+    }
+
+    try {
+      const rows = await this.table.query().select(["id"]).toArray();
+      return rows.map((r) => r.id as string);
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -436,34 +472,63 @@ export class EmbeddingService {
    *
    * @returns Embedding statistics
    */
-  getStats(): EmbeddingStats {
-    const count = this.db
-      .query<{ count: number }, []>("SELECT COUNT(*) as count FROM embeddings")
-      .get();
+  async getStats(): Promise<EmbeddingStats> {
+    await this.ensureInitialized();
 
-    const timestamps = this.db
-      .query<{ oldest: number | null; newest: number | null }, []>(
-        "SELECT MIN(created_at) as oldest, MAX(updated_at) as newest FROM embeddings"
-      )
-      .get();
+    if (!this.table) {
+      return {
+        totalEmbeddings: 0,
+        model: this.provider.model,
+        dimensions: this.provider.dimensions,
+      };
+    }
 
-    return {
-      totalEmbeddings: count?.count || 0,
-      model: this.provider.model,
-      dimensions: this.provider.dimensions,
-      oldestEmbedding: timestamps?.oldest
-        ? new Date(timestamps.oldest)
-        : undefined,
-      newestEmbedding: timestamps?.newest
-        ? new Date(timestamps.newest)
-        : undefined,
-    };
+    try {
+      const rows = await this.table
+        .query()
+        .select(["created_at", "updated_at"])
+        .toArray();
+
+      const count = rows.length;
+      let oldest: number | undefined;
+      let newest: number | undefined;
+
+      for (const row of rows) {
+        const created = row.created_at as number;
+        const updated = row.updated_at as number;
+
+        if (oldest === undefined || created < oldest) {
+          oldest = created;
+        }
+        if (newest === undefined || updated > newest) {
+          newest = updated;
+        }
+      }
+
+      return {
+        totalEmbeddings: count,
+        model: this.provider.model,
+        dimensions: this.provider.dimensions,
+        oldestEmbedding: oldest ? new Date(oldest) : undefined,
+        newestEmbedding: newest ? new Date(newest) : undefined,
+      };
+    } catch {
+      return {
+        totalEmbeddings: 0,
+        model: this.provider.model,
+        dimensions: this.provider.dimensions,
+      };
+    }
   }
 
   /**
    * Close the database connection
    */
   close(): void {
-    this.db.close();
+    // LanceDB connections don't need explicit closing
+    this.db = null;
+    this.table = null;
+    this.initialized = false;
+    this.initPromise = null;
   }
 }

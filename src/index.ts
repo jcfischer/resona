@@ -58,12 +58,3 @@ export { OllamaProvider } from "./providers/ollama";
 export { OpenAIProvider } from "./providers/openai";
 export { VoyageProvider } from "./providers/voyage";
 export { TransformersProvider } from "./providers/transformers";
-
-// SQLite utilities
-export {
-  configureCustomSqlite,
-  createVecDatabase,
-  loadVecExtension,
-  isSqliteVecAvailable,
-  getSqliteVecVersion,
-} from "./sqlite-vec-loader";

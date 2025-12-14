@@ -7,7 +7,7 @@ Resona is a TypeScript library for generating, storing, and searching text embed
 ## Features
 
 - **Multiple Embedding Providers**: Ollama, OpenAI, Voyage AI, and Transformers.js (CPU-based)
-- **Vector Storage**: sqlite-vec for efficient vector similarity search
+- **Vector Storage**: LanceDB for efficient embedded vector similarity search
 - **Change Detection**: Hash-based tracking to avoid re-embedding unchanged content
 - **Batch Processing**: Efficient batch embedding with progress callbacks
 - **Unified Search**: Search across multiple sources (Tana, email, etc.) with source identification
@@ -19,15 +19,7 @@ Resona is a TypeScript library for generating, storing, and searching text embed
 bun add resona
 ```
 
-### Prerequisites
-
-**macOS**: Requires Homebrew's SQLite for extension support:
-
-```bash
-brew install sqlite
-```
-
-**Linux**: System SQLite usually supports extensions by default.
+No additional system dependencies required - LanceDB includes prebuilt binaries for all platforms.
 
 ## Quick Start
 
@@ -241,12 +233,15 @@ await service.embedBatch(items, {
 // Search
 const results = await service.search("query text", 10);
 
-// Get statistics
-const stats = service.getStats();
+// Get statistics (async)
+const stats = await service.getStats();
 // { totalEmbeddings: 1000, model: "nomic-embed-text", dimensions: 768 }
 
-// Cleanup old embeddings
-const removed = service.cleanup(["id1", "id2"]); // Keep only these IDs
+// Cleanup old embeddings (async)
+const removed = await service.cleanup(["id1", "id2"]); // Keep only these IDs
+
+// Get embedded IDs (async)
+const ids = await service.getEmbeddedIds();
 
 // Close connection
 service.close();
@@ -293,6 +288,21 @@ const sourceId = createSourceId("email", "work");
 // "email/work"
 ```
 
+## Storage
+
+Resona uses LanceDB for vector storage. Database paths with `.db` extension are automatically converted to `.lance` directories:
+
+```typescript
+// This creates ./embeddings.lance/ directory
+const service = new EmbeddingService(provider, "./embeddings.db");
+```
+
+LanceDB provides:
+- Fast vector similarity search
+- No external dependencies (prebuilt binaries included)
+- Efficient columnar storage
+- Works with Bun, Node.js, and Deno
+
 ## Development
 
 ```bash
@@ -306,10 +316,6 @@ bun test
 bun run typecheck
 ```
 
-### Testing with sqlite-vec
-
-Tests automatically configure the custom SQLite via `bunfig.toml` preload.
-
 ## Architecture
 
 ```
@@ -317,14 +323,13 @@ resona/
 ├── src/
 │   ├── index.ts                    # Package exports
 │   ├── types.ts                    # Core type definitions
-│   ├── sqlite-vec-loader.ts        # SQLite extension loader
 │   ├── providers/
 │   │   ├── ollama.ts               # Ollama provider (local GPU)
 │   │   ├── openai.ts               # OpenAI provider (cloud)
 │   │   ├── voyage.ts               # Voyage AI provider (cloud)
 │   │   └── transformers.ts         # Transformers.js (local CPU)
 │   └── service/
-│       ├── embedding-service.ts    # Core embedding service
+│       ├── embedding-service.ts    # Core embedding service (LanceDB)
 │       └── unified-search-service.ts # Cross-source search
 └── test/
     ├── providers/
