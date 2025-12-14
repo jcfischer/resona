@@ -6,7 +6,7 @@ Resona is a TypeScript library for generating, storing, and searching text embed
 
 ## Features
 
-- **Multiple Embedding Providers**: Ollama (local), with OpenAI and Voyage AI planned
+- **Multiple Embedding Providers**: Ollama, OpenAI, Voyage AI, and Transformers.js (CPU-based)
 - **Vector Storage**: sqlite-vec for efficient vector similarity search
 - **Change Detection**: Hash-based tracking to avoid re-embedding unchanged content
 - **Batch Processing**: Efficient batch embedding with progress callbacks
@@ -131,6 +131,89 @@ const available = await provider.healthCheck();
 - `bge-m3` (1024 dimensions)
 - `snowflake-arctic-embed` (1024 dimensions)
 
+#### OpenAIProvider
+
+```typescript
+import { OpenAIProvider } from "resona";
+
+// Default model (text-embedding-3-small)
+const provider = new OpenAIProvider(process.env.OPENAI_API_KEY!);
+
+// Specific model
+const provider = new OpenAIProvider(apiKey, "text-embedding-3-large");
+
+// Custom dimensions (for dimension reduction)
+const provider = new OpenAIProvider(apiKey, "text-embedding-3-large", {
+  dimensions: 1024,
+});
+
+// Azure OpenAI or custom endpoint
+const provider = new OpenAIProvider(apiKey, "text-embedding-3-small", {
+  endpoint: "https://your-resource.openai.azure.com/v1",
+});
+```
+
+**Supported OpenAI Models**:
+- `text-embedding-3-small` (1536 dimensions, supports reduction to 512+)
+- `text-embedding-3-large` (3072 dimensions, supports reduction to 256+)
+- `text-embedding-ada-002` (1536 dimensions, legacy)
+
+#### VoyageProvider
+
+```typescript
+import { VoyageProvider } from "resona";
+
+// Default model (voyage-3)
+const provider = new VoyageProvider(process.env.VOYAGE_API_KEY!);
+
+// Specific model
+const provider = new VoyageProvider(apiKey, "voyage-3-large");
+
+// With input type (optimizes for queries vs documents)
+const queryProvider = new VoyageProvider(apiKey, "voyage-3", {
+  inputType: "query",
+});
+const docProvider = new VoyageProvider(apiKey, "voyage-3", {
+  inputType: "document",
+});
+```
+
+**Supported Voyage Models**:
+- `voyage-3` (1024 dimensions) - Best general-purpose
+- `voyage-3-large` (1024 dimensions) - Higher quality
+- `voyage-3-lite` (512 dimensions) - Fast and cost-effective
+- `voyage-code-3` (1024 dimensions) - Code retrieval
+
+#### TransformersProvider (CPU-based)
+
+```typescript
+import { TransformersProvider } from "resona";
+
+// Default model (all-MiniLM-L6-v2)
+const provider = new TransformersProvider();
+
+// Specific model
+const provider = new TransformersProvider("Xenova/bge-base-en-v1.5");
+
+// Custom cache directory
+const provider = new TransformersProvider("Xenova/all-MiniLM-L6-v2", {
+  cacheDir: "/path/to/cache",
+});
+```
+
+**Supported Transformers Models**:
+- `Xenova/all-MiniLM-L6-v2` (384 dimensions) - Fast, good quality
+- `Xenova/all-MiniLM-L12-v2` (384 dimensions) - Higher quality
+- `Xenova/bge-small-en-v1.5` (384 dimensions)
+- `Xenova/bge-base-en-v1.5` (768 dimensions)
+- `Xenova/bge-large-en-v1.5` (1024 dimensions)
+- `nomic-ai/nomic-embed-text-v1.5` (768 dimensions)
+
+**Note**: TransformersProvider requires `@huggingface/transformers` as an optional dependency:
+```bash
+bun add @huggingface/transformers
+```
+
 ### EmbeddingService
 
 ```typescript
@@ -236,13 +319,19 @@ resona/
 │   ├── types.ts                    # Core type definitions
 │   ├── sqlite-vec-loader.ts        # SQLite extension loader
 │   ├── providers/
-│   │   └── ollama.ts               # Ollama provider
+│   │   ├── ollama.ts               # Ollama provider (local GPU)
+│   │   ├── openai.ts               # OpenAI provider (cloud)
+│   │   ├── voyage.ts               # Voyage AI provider (cloud)
+│   │   └── transformers.ts         # Transformers.js (local CPU)
 │   └── service/
 │       ├── embedding-service.ts    # Core embedding service
 │       └── unified-search-service.ts # Cross-source search
 └── test/
     ├── providers/
-    │   └── ollama.test.ts
+    │   ├── ollama.test.ts
+    │   ├── openai.test.ts
+    │   ├── voyage.test.ts
+    │   └── transformers.test.ts
     └── service/
         ├── embedding-service.test.ts
         └── unified-search-service.test.ts

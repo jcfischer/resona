@@ -420,6 +420,18 @@ export class EmbeddingService {
   }
 
   /**
+   * Get list of all embedded item IDs
+   *
+   * @returns Array of item IDs
+   */
+  getEmbeddedIds(): string[] {
+    const rows = this.db
+      .query<{ id: string }, []>("SELECT id FROM embeddings")
+      .all();
+    return rows.map((r) => r.id);
+  }
+
+  /**
    * Get statistics about stored embeddings
    *
    * @returns Embedding statistics

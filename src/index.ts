@@ -55,6 +55,9 @@ export {
 
 // Providers
 export { OllamaProvider } from "./providers/ollama";
+export { OpenAIProvider } from "./providers/openai";
+export { VoyageProvider } from "./providers/voyage";
+export { TransformersProvider } from "./providers/transformers";
 
 // SQLite utilities
 export {
