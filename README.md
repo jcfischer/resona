@@ -342,6 +342,12 @@ resona/
         └── unified-search-service.test.ts
 ```
 
+## Known Issues
+
+### LanceDB Large Result Set Bug
+
+LanceDB 0.13.x has a bug where querying large result sets (1000+ rows) without pagination returns corrupted string data. Resona works around this by paginating `getEmbeddedIds()` queries in batches of 100 rows. The warnings about "Ran out of fragments" at the end of pagination are expected and harmless.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
