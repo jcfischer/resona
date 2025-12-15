@@ -23,7 +23,7 @@ export class OllamaProvider implements EmbeddingProvider {
   readonly name = "ollama";
   readonly model: string;
   readonly dimensions: number;
-  readonly maxBatchSize = 100;
+  readonly maxBatchSize = 10;
   readonly supportsAsync = false;
 
   private endpoint: string;

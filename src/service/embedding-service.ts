@@ -86,10 +86,35 @@ export class EmbeddingService {
     const tables = await this.db.tableNames();
     if (tables.includes("embeddings")) {
       this.table = await this.db.openTable("embeddings");
+      // Ensure scalar index exists on id column for fast deletes
+      await this.ensureIdIndex();
     }
     // Table will be created on first insert with correct schema
 
     this.initialized = true;
+  }
+
+  /**
+   * Ensure scalar index exists on id column
+   * This dramatically speeds up delete operations
+   */
+  private async ensureIdIndex(): Promise<void> {
+    if (!this.table) return;
+
+    try {
+      // Check if index already exists by listing indices
+      const indices = await this.table.listIndices();
+      const hasIdIndex = indices.some((idx: { columns: string[] }) =>
+        idx.columns.includes("id")
+      );
+
+      if (!hasIdIndex) {
+        await this.table.createIndex("id");
+      }
+    } catch {
+      // Index creation might fail if already exists or other issues
+      // Silently continue - queries will still work, just slower
+    }
   }
 
   /**
@@ -101,6 +126,9 @@ export class EmbeddingService {
     this.table = await this.db.createTable("embeddings", [record], {
       mode: "overwrite",
     });
+
+    // Create scalar index on id column for fast lookups and deletes
+    await this.ensureIdIndex();
   }
 
   /**
@@ -214,28 +242,40 @@ export class EmbeddingService {
       try {
         const embeddings = await this.provider.embed(texts);
 
+        // Build records for batch storage
+        const records: EmbeddingRecord[] = [];
+        const now = Date.now();
+
         for (let j = 0; j < batchItems.length; j++) {
           const item = batchItems[j];
           const embedding = embeddings[j];
           const textHash = batchHashes[j];
           const textToEmbed = item.contextText || item.text;
+          const metadataJson = item.metadata ? JSON.stringify(item.metadata) : "";
 
-          try {
-            await this.storeEmbedding(
-              item.id,
-              embedding,
-              textHash,
-              textToEmbed,
-              item.metadata
+          records.push({
+            id: item.id,
+            text_hash: textHash,
+            context_text: textToEmbed,
+            model: this.provider.model,
+            dimensions: this.provider.dimensions,
+            metadata: metadataJson,
+            created_at: now,
+            updated_at: now,
+            vector: Array.from(embedding),
+          });
+        }
+
+        // Batch store: delete existing and add new in bulk
+        try {
+          await this.storeEmbeddingsBatch(records);
+          result.processed += records.length;
+        } catch (error) {
+          result.errors += records.length;
+          if (result.errorSamples!.length < 5) {
+            result.errorSamples!.push(
+              `Batch store error: ${error instanceof Error ? error.message : String(error)}`
             );
-            result.processed++;
-          } catch (error) {
-            result.errors++;
-            if (result.errorSamples!.length < 5) {
-              result.errorSamples!.push(
-                `${item.id}: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
           }
         }
       } catch (error) {
@@ -320,6 +360,30 @@ export class EmbeddingService {
         // Record might not exist, that's fine
       }
       await this.table.add([record]);
+    }
+  }
+
+  /**
+   * Store multiple embeddings in batch
+   * Uses mergeInsert (upsert) for efficient updates without delete+add
+   */
+  private async storeEmbeddingsBatch(records: EmbeddingRecord[]): Promise<void> {
+    if (records.length === 0) return;
+
+    if (!this.table) {
+      // Create table with first record, then add the rest
+      await this.createTable(records[0]);
+      if (records.length > 1) {
+        await this.table!.add(records.slice(1));
+      }
+    } else {
+      // Use mergeInsert (upsert) - updates existing, inserts new
+      // This is more efficient than delete+add with large tables
+      await this.table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(records);
     }
   }
 
