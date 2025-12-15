@@ -533,8 +533,31 @@ export class EmbeddingService {
     }
 
     try {
-      const rows = await this.table.query().select(["id"]).toArray();
-      return rows.map((r) => r.id as string);
+      // Paginate to avoid LanceDB bug with large result sets returning corrupt data
+      const BATCH_SIZE = 100;
+      const allIds: string[] = [];
+      let offset = 0;
+
+      while (true) {
+        const rows = await this.table
+          .query()
+          .select(["id"])
+          .limit(BATCH_SIZE)
+          .offset(offset)
+          .toArray();
+
+        if (rows.length === 0) {
+          break;
+        }
+
+        for (const row of rows) {
+          allIds.push(row.id as string);
+        }
+
+        offset += BATCH_SIZE;
+      }
+
+      return allIds;
     } catch {
       return [];
     }
