@@ -253,6 +253,15 @@ export class EmbeddingService {
           const textToEmbed = item.contextText || item.text;
           const metadataJson = item.metadata ? JSON.stringify(item.metadata) : "";
 
+          // Skip items with empty or invalid IDs
+          if (!item.id || item.id.length === 0) {
+            result.errors++;
+            if (result.errorSamples!.length < 5) {
+              result.errorSamples!.push(`Skipped item with empty ID`);
+            }
+            continue;
+          }
+
           records.push({
             id: item.id,
             text_hash: textHash,
