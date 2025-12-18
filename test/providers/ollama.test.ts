@@ -16,7 +16,7 @@ describe("OllamaProvider", () => {
       expect(provider.name).toBe("ollama");
       expect(provider.model).toBe("nomic-embed-text");
       expect(provider.dimensions).toBe(768);
-      expect(provider.maxBatchSize).toBe(100);
+      expect(provider.maxBatchSize).toBe(10);
       expect(provider.supportsAsync).toBe(false);
     });
 
