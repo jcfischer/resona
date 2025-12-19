@@ -62,6 +62,9 @@ export interface EmbeddingProvider {
   /** Whether provider supports async/parallel requests */
   readonly supportsAsync: boolean;
 
+  /** Maximum characters per text (optional, used for chunking) */
+  readonly maxChars?: number;
+
   /**
    * Embed multiple texts in a batch
    * @param texts - Array of text strings to embed

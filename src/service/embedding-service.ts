@@ -250,12 +250,16 @@ export class EmbeddingService {
   ): Promise<BatchEmbedResult> {
     await this.ensureInitialized();
 
+    // Use provider's maxChars for chunking if available, otherwise fall back to default
+    // This ensures chunks fit within the model's context window
+    const effectiveChunkSize = this.provider.maxChars ?? DEFAULT_CHUNK_SIZE;
+
     const {
       onProgress,
       progressInterval = 100,
       forceAll = false,
       storeBatchSize = 5000, // Large batches OK - we use add() for new records, chunk mergeInsert() for updates
-      chunkSize = DEFAULT_CHUNK_SIZE,
+      chunkSize = effectiveChunkSize,
       chunkOverlap = DEFAULT_CHUNK_OVERLAP,
     } = options;
 
