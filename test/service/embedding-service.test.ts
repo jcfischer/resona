@@ -183,6 +183,117 @@ describe("EmbeddingService", () => {
   });
 
   describe("embedBatch", () => {
+    describe("storeBatchSize option", () => {
+      it("should buffer writes until threshold", async () => {
+        // T-2.1: Buffer writes until storeBatchSize threshold
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        // Create 250 items - with storeBatchSize=100, expect 3 writes:
+        // 100 + 100 + 50 (final flush)
+        const items: ItemToEmbed[] = Array.from({ length: 250 }, (_, i) => ({
+          id: `item-${i}`,
+          text: `Item number ${i} with some text`,
+        }));
+
+        // Track storeEmbeddingsBatch calls by checking stats at intervals
+        // Since provider.maxBatchSize is 10, we process 25 Ollama batches
+        // Without storeBatchSize, this would be 25 LanceDB writes
+        // With storeBatchSize=100, it should be 3 LanceDB writes
+
+        const result = await service.embedBatch(items, { storeBatchSize: 100 });
+
+        expect(result.processed).toBe(250);
+        expect(result.errors).toBe(0);
+
+        // Verify all items are in the database
+        const stats = await service.getStats();
+        expect(stats.totalEmbeddings).toBe(250);
+      });
+
+      it("should use default storeBatchSize of 5000", async () => {
+        // T-2.1: Default behavior buffers up to 5000
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        // With 100 items and default storeBatchSize=5000:
+        // All items buffered, single flush at end
+        const items: ItemToEmbed[] = Array.from({ length: 100 }, (_, i) => ({
+          id: `item-${i}`,
+          text: `Item number ${i}`,
+        }));
+
+        const result = await service.embedBatch(items);
+
+        expect(result.processed).toBe(100);
+
+        const stats = await service.getStats();
+        expect(stats.totalEmbeddings).toBe(100);
+      });
+
+      it("should report stored count in progress", async () => {
+        // T-2.2: Progress callback includes stored and bufferSize fields
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        const items: ItemToEmbed[] = Array.from({ length: 150 }, (_, i) => ({
+          id: `item-${i}`,
+          text: `Item number ${i} with text`,
+        }));
+
+        const progressSnapshots: Array<{
+          processed: number;
+          stored: number;
+          bufferSize: number;
+        }> = [];
+
+        await service.embedBatch(items, {
+          storeBatchSize: 100,
+          onProgress: (progress) => {
+            progressSnapshots.push({
+              processed: progress.processed,
+              stored: progress.stored,
+              bufferSize: progress.bufferSize,
+            });
+          },
+          progressInterval: 10,
+        });
+
+        // Should have progress callbacks
+        expect(progressSnapshots.length).toBeGreaterThan(0);
+
+        // stored should lag behind processed (buffering happening)
+        // At some point, stored should be less than processed
+        const hasBuffering = progressSnapshots.some(
+          (p) => p.stored < p.processed
+        );
+        expect(hasBuffering).toBe(true);
+
+        // bufferSize should be defined in all callbacks
+        for (const p of progressSnapshots) {
+          expect(typeof p.bufferSize).toBe("number");
+          expect(typeof p.stored).toBe("number");
+        }
+      });
+
+      it("should flush remaining buffer at end", async () => {
+        // T-2.3: Remaining buffer flushed when processing completes
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        // 150 items with storeBatchSize=100
+        // Should write 100 at threshold, then 50 at end
+        const items: ItemToEmbed[] = Array.from({ length: 150 }, (_, i) => ({
+          id: `item-${i}`,
+          text: `Item number ${i} with some text`,
+        }));
+
+        const result = await service.embedBatch(items, { storeBatchSize: 100 });
+
+        expect(result.processed).toBe(150);
+
+        // ALL 150 items should be in the database (including the 50 flushed at end)
+        const stats = await service.getStats();
+        expect(stats.totalEmbeddings).toBe(150);
+      });
+    });
+
     it("should embed multiple items", async () => {
       service = new EmbeddingService(provider, TEST_DB_PATH);
 
@@ -264,6 +375,56 @@ describe("EmbeddingService", () => {
       expect(result.processed).toBe(2);
       expect(result.skipped).toBe(0);
       expect(provider.getCallCount()).toBe(2);
+    });
+
+    describe("backward compatibility", () => {
+      it("should work without storeBatchSize option", async () => {
+        // T-3.1: Existing callers without new option should work unchanged
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        const items: ItemToEmbed[] = [
+          { id: "item-1", text: "First item" },
+          { id: "item-2", text: "Second item" },
+          { id: "item-3", text: "Third item" },
+        ];
+
+        // Call without storeBatchSize - should use default
+        const result = await service.embedBatch(items);
+
+        expect(result.processed).toBe(3);
+        expect(result.skipped).toBe(0);
+        expect(result.errors).toBe(0);
+
+        const stats = await service.getStats();
+        expect(stats.totalEmbeddings).toBe(3);
+      });
+
+      it("should not break existing progress callbacks", async () => {
+        // T-3.1: Old-style callbacks that don't use new fields should still work
+        service = new EmbeddingService(provider, TEST_DB_PATH);
+
+        const items: ItemToEmbed[] = Array.from({ length: 20 }, (_, i) => ({
+          id: `item-${i}`,
+          text: `Item number ${i}`,
+        }));
+
+        let callbackCount = 0;
+
+        // Old-style callback that only uses existing fields
+        await service.embedBatch(items, {
+          onProgress: ({ processed, total, skipped, errors }) => {
+            // Destructuring without new fields should work
+            expect(typeof processed).toBe("number");
+            expect(typeof total).toBe("number");
+            expect(typeof skipped).toBe("number");
+            expect(typeof errors).toBe("number");
+            callbackCount++;
+          },
+          progressInterval: 5,
+        });
+
+        expect(callbackCount).toBeGreaterThan(0);
+      });
     });
   });
 

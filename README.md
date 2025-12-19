@@ -9,7 +9,7 @@ Resona is a TypeScript library for generating, storing, and searching text embed
 - **Multiple Embedding Providers**: Ollama, OpenAI, Voyage AI, and Transformers.js (CPU-based)
 - **Vector Storage**: LanceDB for efficient embedded vector similarity search
 - **Change Detection**: Hash-based tracking to avoid re-embedding unchanged content
-- **Batch Processing**: Efficient batch embedding with progress callbacks
+- **Batch Processing**: Efficient batch embedding with progress callbacks and LanceDB write batching
 - **Unified Search**: Search across multiple sources (Tana, email, etc.) with source identification
 - **Hierarchical Source IDs**: Support for `type/instance` patterns (e.g., `tana/main`, `email/work`)
 
@@ -224,10 +224,11 @@ await service.embed({
 // Batch embed with progress
 await service.embedBatch(items, {
   onProgress: (progress) => {
-    console.log(`${progress.processed}/${progress.total}`);
+    console.log(`${progress.processed}/${progress.total} (stored: ${progress.stored})`);
   },
   progressInterval: 100,
   forceAll: false, // Set to true to re-embed unchanged items
+  storeBatchSize: 5000, // Buffer this many before writing to LanceDB (default: 5000)
 });
 
 // Search
@@ -341,6 +342,32 @@ resona/
         ├── embedding-service.test.ts
         └── unified-search-service.test.ts
 ```
+
+## Performance
+
+### LanceDB Write Batching
+
+By default, Resona buffers embedding records in memory before writing to LanceDB. This dramatically improves performance for large embedding jobs:
+
+```typescript
+// Default: buffer 5000 records before writing
+await service.embedBatch(items);
+
+// Custom buffer size for memory-constrained environments
+await service.embedBatch(items, { storeBatchSize: 1000 });
+
+// Monitor buffering with progress callback
+await service.embedBatch(items, {
+  onProgress: ({ processed, stored, bufferSize }) => {
+    console.log(`Generated: ${processed}, Persisted: ${stored}, Buffer: ${bufferSize}`);
+  },
+});
+```
+
+| Dataset Size | Without Batching | With Batching (default) |
+|--------------|------------------|------------------------|
+| 100k items   | ~2000 writes     | ~20 writes             |
+| Memory overhead | 0             | ~20-40MB               |
 
 ## Known Issues
 

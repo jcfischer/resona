@@ -188,7 +188,12 @@ export class EmbeddingService {
   ): Promise<BatchEmbedResult> {
     await this.ensureInitialized();
 
-    const { onProgress, progressInterval = 100, forceAll = false } = options;
+    const {
+      onProgress,
+      progressInterval = 100,
+      forceAll = false,
+      storeBatchSize = 5000,
+    } = options;
 
     const result: BatchEmbedResult = {
       processed: 0,
@@ -196,6 +201,10 @@ export class EmbeddingService {
       errors: 0,
       errorSamples: [],
     };
+
+    // Buffer for batched LanceDB writes
+    const buffer: EmbeddingRecord[] = [];
+    let stored = 0;
 
     // Build hash map for change detection
     const hashMap = new Map<string, string>();
@@ -275,16 +284,24 @@ export class EmbeddingService {
           });
         }
 
-        // Batch store: delete existing and add new in bulk
-        try {
-          await this.storeEmbeddingsBatch(records);
-          result.processed += records.length;
-        } catch (error) {
-          result.errors += records.length;
-          if (result.errorSamples!.length < 5) {
-            result.errorSamples!.push(
-              `Batch store error: ${error instanceof Error ? error.message : String(error)}`
-            );
+        // Add records to buffer instead of immediate write
+        buffer.push(...records);
+        result.processed += records.length;
+
+        // Flush buffer when it reaches threshold
+        if (buffer.length >= storeBatchSize) {
+          try {
+            await this.storeEmbeddingsBatch(buffer);
+            stored += buffer.length;
+            buffer.length = 0; // Clear buffer
+          } catch (error) {
+            result.errors += buffer.length;
+            if (result.errorSamples!.length < 5) {
+              result.errorSamples!.push(
+                `Batch store error: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+            buffer.length = 0; // Clear buffer even on error
           }
         }
       } catch (error) {
@@ -311,7 +328,24 @@ export class EmbeddingService {
           currentItem:
             batchItems[batchItems.length - 1]?.text.substring(0, 50),
           rate,
+          stored,
+          bufferSize: buffer.length,
         });
+      }
+    }
+
+    // Flush remaining buffer at end
+    if (buffer.length > 0) {
+      try {
+        await this.storeEmbeddingsBatch(buffer);
+        stored += buffer.length;
+      } catch (error) {
+        result.errors += buffer.length;
+        if (result.errorSamples!.length < 5) {
+          result.errorSamples!.push(
+            `Final flush error: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
     }
 
@@ -326,6 +360,8 @@ export class EmbeddingService {
         errors: result.errors,
         total: items.length,
         rate,
+        stored,
+        bufferSize: 0, // Buffer should be empty after final flush
       });
     }
 

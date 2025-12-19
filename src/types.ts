@@ -262,7 +262,7 @@ export interface UnifiedSearchResult {
  * Progress information for batch embedding operations
  */
 export interface BatchEmbedProgress {
-  /** Number of items successfully processed */
+  /** Number of items successfully processed (embeddings generated) */
   processed: number;
 
   /** Number of items skipped (unchanged) */
@@ -279,6 +279,12 @@ export interface BatchEmbedProgress {
 
   /** Processing rate (items per second) */
   rate?: number;
+
+  /** Number of embeddings written to storage (LanceDB) */
+  stored: number;
+
+  /** Current buffer occupancy (embeddings awaiting storage) */
+  bufferSize: number;
 }
 
 /**
@@ -296,6 +302,9 @@ export interface BatchEmbedOptions {
 
   /** Force regeneration of all embeddings, ignoring cache (default: false) */
   forceAll?: boolean;
+
+  /** Batch size for LanceDB writes (default: 5000). Buffer embeddings in memory before writing. */
+  storeBatchSize?: number;
 }
 
 /**
