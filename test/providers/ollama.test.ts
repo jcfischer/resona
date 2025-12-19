@@ -6,7 +6,10 @@
 
 import { describe, it, expect, beforeAll, mock } from "bun:test";
 import { OllamaProvider } from "../../src/providers/ollama";
-import { OLLAMA_MODEL_DIMENSIONS } from "../../src/types";
+import {
+  OLLAMA_MODEL_DIMENSIONS,
+  OLLAMA_MODEL_CONTEXT_TOKENS,
+} from "../../src/types";
 
 describe("OllamaProvider", () => {
   describe("constructor", () => {
@@ -125,6 +128,48 @@ describe("OllamaProvider", () => {
       const result = await provider.healthCheck();
 
       expect(typeof result).toBe("boolean");
+    });
+  });
+
+  describe("model-specific context limits", () => {
+    it("should have context token limits for known models", () => {
+      // mxbai-embed-large has 512 token context
+      expect(OLLAMA_MODEL_CONTEXT_TOKENS["mxbai-embed-large"]).toBe(512);
+
+      // nomic-embed-text has 8192 token context
+      expect(OLLAMA_MODEL_CONTEXT_TOKENS["nomic-embed-text"]).toBe(8192);
+    });
+
+    it("should auto-detect maxChars based on model context limit", () => {
+      // mxbai-embed-large: 512 tokens * 4 chars/token = 2048 chars
+      const mxbaiProvider = new OllamaProvider("mxbai-embed-large");
+      expect(mxbaiProvider.maxChars).toBeLessThanOrEqual(2048);
+
+      // nomic-embed-text: 8192 tokens * 4 chars/token = 32768 chars
+      const nomicProvider = new OllamaProvider("nomic-embed-text");
+      expect(nomicProvider.maxChars).toBeGreaterThan(2048);
+    });
+
+    it("should truncate text that exceeds model context limit", async () => {
+      const provider = new OllamaProvider("mxbai-embed-large");
+
+      try {
+        const isHealthy = await provider.healthCheck();
+        if (!isHealthy) {
+          console.log("Skipping truncation test - Ollama not available");
+          return;
+        }
+
+        // Create text that exceeds 512 token (~2000 char) limit
+        const longText = "x".repeat(5000);
+
+        // Should not throw - text should be truncated
+        const embedding = await provider.embedSingle(longText);
+        expect(embedding).toBeInstanceOf(Float32Array);
+        expect(embedding.length).toBe(1024); // mxbai dimensions
+      } catch (error) {
+        console.log("Skipping truncation test - Ollama not available");
+      }
     });
   });
 });

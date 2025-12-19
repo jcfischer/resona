@@ -6,7 +6,7 @@
  */
 
 import type { EmbeddingProvider } from "../types";
-import { OLLAMA_MODEL_DIMENSIONS } from "../types";
+import { OLLAMA_MODEL_DIMENSIONS, OLLAMA_MODEL_CONTEXT_TOKENS } from "../types";
 
 const DEFAULT_ENDPOINT = "http://localhost:11434";
 
@@ -14,17 +14,25 @@ const DEFAULT_ENDPOINT = "http://localhost:11434";
  * Ollama embedding provider
  *
  * Supports models like:
- * - nomic-embed-text (768 dimensions)
- * - mxbai-embed-large (1024 dimensions)
- * - all-minilm (384 dimensions)
- * - bge-m3 (1024 dimensions)
+ * - nomic-embed-text (768 dimensions, 8192 token context)
+ * - mxbai-embed-large (1024 dimensions, 512 token context)
+ * - all-minilm (384 dimensions, 512 token context)
+ * - bge-m3 (1024 dimensions, 8192 token context)
  */
+
+// Default context for unknown models: conservative 512 tokens
+const DEFAULT_CONTEXT_TOKENS = 512;
+// ~4 chars per token (rough estimate)
+const CHARS_PER_TOKEN = 4;
+
 export class OllamaProvider implements EmbeddingProvider {
   readonly name = "ollama";
   readonly model: string;
   readonly dimensions: number;
   readonly maxBatchSize = 10;
   readonly supportsAsync = false;
+  /** Maximum characters before truncation (based on model context limit) */
+  readonly maxChars: number;
 
   private endpoint: string;
 
@@ -34,8 +42,14 @@ export class OllamaProvider implements EmbeddingProvider {
    * @param model - Model name (e.g., 'nomic-embed-text')
    * @param endpoint - Ollama server URL (default: http://localhost:11434)
    * @param dimensions - Explicit dimensions (auto-detected for known models)
+   * @param maxChars - Max characters before truncation (auto-detected based on model)
    */
-  constructor(model: string, endpoint?: string, dimensions?: number) {
+  constructor(
+    model: string,
+    endpoint?: string,
+    dimensions?: number,
+    maxChars?: number
+  ) {
     this.model = model;
     this.endpoint = endpoint || DEFAULT_ENDPOINT;
 
@@ -49,12 +63,33 @@ export class OllamaProvider implements EmbeddingProvider {
         `Unknown model "${model}". Please provide explicit dimensions parameter.`
       );
     }
+
+    // Auto-detect maxChars based on model's context token limit
+    if (maxChars !== undefined) {
+      this.maxChars = maxChars;
+    } else {
+      const contextTokens =
+        OLLAMA_MODEL_CONTEXT_TOKENS[model] ?? DEFAULT_CONTEXT_TOKENS;
+      this.maxChars = contextTokens * CHARS_PER_TOKEN;
+    }
+  }
+
+  /**
+   * Truncate text to fit within model's context window
+   */
+  private truncate(text: string): string {
+    if (text.length <= this.maxChars) {
+      return text;
+    }
+    // Truncate and add indicator
+    return text.substring(0, this.maxChars - 3) + "...";
   }
 
   /**
    * Embed a single text
    */
   async embedSingle(text: string): Promise<Float32Array> {
+    const truncatedText = this.truncate(text);
     const response = await fetch(`${this.endpoint}/api/embed`, {
       method: "POST",
       headers: {
@@ -62,7 +97,7 @@ export class OllamaProvider implements EmbeddingProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        input: text,
+        input: truncatedText,
       }),
     });
 
@@ -94,6 +129,9 @@ export class OllamaProvider implements EmbeddingProvider {
       return [];
     }
 
+    // Truncate all texts to fit context window
+    const truncatedTexts = texts.map((t) => this.truncate(t));
+
     // Ollama's /api/embed supports batch input
     const response = await fetch(`${this.endpoint}/api/embed`, {
       method: "POST",
@@ -102,7 +140,7 @@ export class OllamaProvider implements EmbeddingProvider {
       },
       body: JSON.stringify({
         model: this.model,
-        input: texts,
+        input: truncatedTexts,
       }),
     });
 

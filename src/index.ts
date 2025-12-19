@@ -31,6 +31,11 @@ export {
   // Statistics types
   type EmbeddingStats,
 
+  // Maintenance types
+  type MaintenanceOptions,
+  type MaintenanceResult,
+  type DatabaseDiagnostics,
+
   // Helper functions
   parseSourceId,
   createSourceId,
@@ -38,6 +43,7 @@ export {
 
   // Model dimension constants
   OLLAMA_MODEL_DIMENSIONS,
+  OLLAMA_MODEL_CONTEXT_TOKENS,
   OPENAI_MODEL_DIMENSIONS,
   VOYAGE_MODEL_DIMENSIONS,
   TRANSFORMERS_MODEL_DIMENSIONS,

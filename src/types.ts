@@ -305,6 +305,19 @@ export interface BatchEmbedOptions {
 
   /** Batch size for LanceDB writes (default: 5000). Buffer embeddings in memory before writing. */
   storeBatchSize?: number;
+
+  /**
+   * Maximum characters per chunk for long texts (default: 30000).
+   * Texts longer than this are split into overlapping chunks.
+   * Each chunk gets its own embedding with ID suffix (#0, #1, etc.)
+   */
+  chunkSize?: number;
+
+  /**
+   * Character overlap between chunks (default: 500).
+   * Provides context continuity at chunk boundaries.
+   */
+  chunkOverlap?: number;
 }
 
 /**
@@ -349,6 +362,87 @@ export interface EmbeddingStats {
 }
 
 // ============================================
+// DATABASE MAINTENANCE
+// ============================================
+
+/**
+ * Options for database maintenance operations
+ */
+export interface MaintenanceOptions {
+  /** Skip compaction (default: false) */
+  skipCompaction?: boolean;
+
+  /** Skip index rebuild even if stale (default: false) */
+  skipIndex?: boolean;
+
+  /** Skip version cleanup (default: false) */
+  skipCleanup?: boolean;
+
+  /** Days to retain old versions (default: 7) */
+  retentionDays?: number;
+
+  /** Target rows per fragment for compaction (default: 500000) */
+  targetRowsPerFragment?: number;
+
+  /** Threshold for index staleness (default: 0.1 = 10%) */
+  indexStaleThreshold?: number;
+
+  /** Progress callback for long operations */
+  onProgress?: (step: string, details?: string) => void;
+}
+
+/**
+ * Result of maintenance operations
+ */
+export interface MaintenanceResult {
+  /** Compaction metrics */
+  compaction?: {
+    fragmentsRemoved: number;
+    filesCreated: number;
+  };
+
+  /** Whether index was rebuilt */
+  indexRebuilt: boolean;
+
+  /** Index stats after maintenance */
+  indexStats?: {
+    numIndexedRows: number;
+    numUnindexedRows: number;
+  };
+
+  /** Cleanup stats */
+  cleanup?: {
+    bytesRemoved: number;
+    versionsRemoved: number;
+  };
+
+  /** Total duration in milliseconds */
+  durationMs: number;
+}
+
+/**
+ * Database health diagnostics
+ */
+export interface DatabaseDiagnostics {
+  /** Total embeddings stored */
+  totalRows: number;
+
+  /** Current table version */
+  version: number;
+
+  /** Index health (null if no index exists) */
+  index: {
+    numIndexedRows: number;
+    numUnindexedRows: number;
+    stalePercent: number;
+    needsRebuild: boolean;
+  } | null;
+
+  /** Database file path */
+  dbPath: string;
+}
+
+// ============================================
 // MODEL DIMENSION MAPPINGS
 // ============================================
 
@@ -361,6 +455,20 @@ export const OLLAMA_MODEL_DIMENSIONS: Record<string, number> = {
   "all-minilm": 384,
   "bge-m3": 1024,
   "snowflake-arctic-embed": 1024,
+};
+
+/**
+ * Known Ollama model context token limits
+ *
+ * These are the maximum number of tokens each model can process.
+ * Use ~4 chars per token as a rough conversion to character limits.
+ */
+export const OLLAMA_MODEL_CONTEXT_TOKENS: Record<string, number> = {
+  "nomic-embed-text": 8192, // 8k context
+  "mxbai-embed-large": 512, // Only 512 tokens!
+  "all-minilm": 512, // Small context
+  "bge-m3": 8192, // 8k context
+  "snowflake-arctic-embed": 512, // Conservative default
 };
 
 /**
