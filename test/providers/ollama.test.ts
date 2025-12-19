@@ -141,13 +141,13 @@ describe("OllamaProvider", () => {
     });
 
     it("should auto-detect maxChars based on model context limit", () => {
-      // mxbai-embed-large: 512 tokens * 4 chars/token = 2048 chars
+      // mxbai-embed-large: 512 tokens * 3 chars/token = 1536 chars
       const mxbaiProvider = new OllamaProvider("mxbai-embed-large");
-      expect(mxbaiProvider.maxChars).toBeLessThanOrEqual(2048);
+      expect(mxbaiProvider.maxChars).toBe(1536);
 
-      // nomic-embed-text: 8192 tokens * 4 chars/token = 32768 chars
+      // nomic-embed-text: 8192 tokens * 3 chars/token = 24576 chars
       const nomicProvider = new OllamaProvider("nomic-embed-text");
-      expect(nomicProvider.maxChars).toBeGreaterThan(2048);
+      expect(nomicProvider.maxChars).toBe(24576);
     });
 
     it("should truncate text that exceeds model context limit", async () => {

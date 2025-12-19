@@ -22,8 +22,8 @@ const DEFAULT_ENDPOINT = "http://localhost:11434";
 
 // Default context for unknown models: conservative 512 tokens
 const DEFAULT_CONTEXT_TOKENS = 512;
-// ~4 chars per token (rough estimate)
-const CHARS_PER_TOKEN = 4;
+// ~3 chars per token (conservative estimate - tokenization varies with content)
+const CHARS_PER_TOKEN = 3;
 
 export class OllamaProvider implements EmbeddingProvider {
   readonly name = "ollama";
