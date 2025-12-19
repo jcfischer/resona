@@ -464,7 +464,8 @@ export const OLLAMA_MODEL_DIMENSIONS: Record<string, number> = {
  * Known Ollama model context token limits
  *
  * These are the maximum number of tokens each model can process.
- * Use ~4 chars per token as a rough conversion to character limits.
+ * Use ~3 chars per token as a conservative conversion to character limits.
+ * (Tokenization varies - punctuation and special chars use more tokens)
  */
 export const OLLAMA_MODEL_CONTEXT_TOKENS: Record<string, number> = {
   "nomic-embed-text": 8192, // 8k context
