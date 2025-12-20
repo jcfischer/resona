@@ -33,6 +33,8 @@ interface EmbeddingRecord {
   created_at: number;
   updated_at: number;
   vector: number[];
+  // Index signature for LanceDB compatibility
+  [key: string]: string | number | number[];
 }
 
 /**
