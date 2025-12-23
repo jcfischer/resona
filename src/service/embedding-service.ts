@@ -807,6 +807,9 @@ export class EmbeddingService {
   /**
    * Delete multiple embeddings by ID
    *
+   * Batches deletes to avoid SIGILL crashes from overly large OR clauses
+   * in LanceDB's native Arrow code.
+   *
    * @param ids - Item IDs to delete
    */
   async deleteByIds(ids: string[]): Promise<void> {
@@ -814,13 +817,18 @@ export class EmbeddingService {
     await this.ensureInitialized();
 
     if (this.table) {
-      // Build OR condition for all IDs
-      const conditions = ids.map((id) => `id = '${id.replace(/'/g, "''")}'`);
-      const whereClause = conditions.join(" OR ");
-      try {
-        await this.table.delete(whereClause);
-      } catch {
-        // Records might not exist
+      // Batch deletes to avoid SIGILL from large OR clauses in LanceDB
+      const DELETE_BATCH_SIZE = 500;
+
+      for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
+        const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
+        const conditions = batch.map((id) => `id = '${id.replace(/'/g, "''")}'`);
+        const whereClause = conditions.join(" OR ");
+        try {
+          await this.table.delete(whereClause);
+        } catch {
+          // Records might not exist
+        }
       }
     }
   }
